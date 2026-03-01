@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>業務管理アプリ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+    <style>
+        body { background-color: #f8fafc; touch-action: manipulation; }
+        #calendar { background: white; max-height: 60vh; border-radius: 8px; overflow: hidden; }
+        .fc-toolbar-title { font-size: 1rem !important; font-weight: bold; }
+        .fc-button { padding: 4px 8px !important; font-size: 0.75rem !important; }
+        .fc-daygrid-day-number { font-size: 0.75rem; padding: 4px !important; }
+        .fc-event-title { font-size: 0.7rem !important; text-align: center; font-weight: bold; }
+        .selected-status { outline: 3px solid #000; box-shadow: 0 0 10px rgba(0,0,0,0.3); z-index: 10; }
+        .fc-day-sun { background-color: #fff1f2; }
+        .fc-day-sat { background-color: #f0f9ff; }
+    </style>
+</head>
+<body class="p-2 text-gray-800">
+    <div class="max-w-md mx-auto space-y-2">
+        <div class="bg-white p-3 rounded-lg shadow-sm border">
+            <div class="flex justify-between items-center mb-3">
+                <h1 class="font-bold text-sm text-blue-600 italic">SCHEDULE COUNTER</h1>
+                <div class="flex gap-2">
+                    <button onclick="toggleBackup()" class="text-[10px] text-blue-400 border px-1 rounded font-bold">バックアップ</button>
+                    <button onclick="resetAll()" class="text-[10px] text-gray-300 border px-1 rounded">初期化</button>
+                </div>
+            </div>
+            
+            <div id="backup-menu" class="hidden bg-gray-50 p-2 mb-3 rounded border text-[11px] space-y-2">
+                <p class="font-bold text-gray-600 italic">BACKUP & IMPORT</p>
+                <div class="flex gap-2">
+                    <button onclick="exportData()" class="bg-blue-500 text-white px-2 py-1 rounded flex-grow">コピー</button>
+                    <button onclick="importData()" class="bg-orange-500 text-white px-2 py-1 rounded flex-grow">復元</button>
+                </div>
+            </div>
+
+            <div id="palette" class="grid grid-cols-5 gap-1.5 mb-2"></div>
+            
+            <div class="flex justify-between items-center mt-3 pt-2 border-t">
+                <button onclick="selectStatus('clear', '#ffffff', '消去')" id="btn-clear" class="px-2 py-1 text-[10px] rounded border bg-gray-50 text-gray-400 font-bold">消しゴム</button>
+                <button onclick="saveAllData()" class="bg-blue-600 text-white px-8 py-1.5 rounded-full font-bold text-xs shadow-md">保存</button>
+            </div>
+        </div>
+
+        <div id="calendar" class="border shadow-sm"></div>
+
+        <div class="bg-white p-3 rounded-lg border shadow-sm">
+            <h2 class="text-[10px] font-bold text-gray-400 mb-2 uppercase tracking-wider text-center">Monthly Total (当月のみ)</h2>
+            <div id="summary-list" class="grid grid-cols-5 gap-1.5"></div>
+        </div>
+    </div>
+
+    <script>
+        let calendar = null;
+        let currentStatus = null;
+        
+        // 項目名の変更：パナ昼、パナ夜、アート、ハンデ、休み
+        const defaultStatusList = [
+            { id: 'st1', label: 'パナ昼', color: '#3b82f6' },
+            { id: 'st2', label: 'パナ夜', color: '#1e40af' },
+            { id: 'st3', label: 'アート', color: '#a855f7' },
+            { id: 'st4', label: 'ハンデ', color: '#ef4444' },
+            { id: 'st5', label: '休み', color: '#fde047' }
+        ];
+
+        let statusList = JSON.parse(localStorage.getItem('my_status_list')) || defaultStatusList;
+
+        document.addEventListener('DOMContentLoaded', function() {
+            renderPalette();
+            initCalendar();
+        });
+
+        function initCalendar() {
+            const calendarEl = document.getElementById('calendar');
+            const savedEvents = JSON.parse(localStorage.getItem('my_calendar_events')) || [];
+
+            calendar = new FullCalendar.Calendar(calendarEl, {
+                initialView: 'dayGridMonth',
+                locale: 'ja',
+                height: 'auto',
+                headerToolbar: { left: 'prev,next', center: 'title', right: 'today' },
+                events: savedEvents,
+                datesSet: () => updateSummary(),
+                dateClick: function(info) {
+                    if (!currentStatus) return;
+                    const existingEvents = calendar.getEvents().filter(e => e.startStr === info.dateStr);
+                    existingEvents.forEach(e => e.remove());
+                    if (currentStatus.id !== 'clear') {
+                        calendar.addEvent({
+                            title: currentStatus.label,
+                            start: info.dateStr,
+                            backgroundColor: currentStatus.color,
+                            borderColor: currentStatus.color,
+                            textColor: (currentStatus.color === '#fde047') ? '#000' : '#fff',
+                            allDay: true
+                        });
+                    }
+                    updateSummary();
+                }
+            });
+            calendar.render();
+        }
+
+        function updateSummary() {
+            const summaryListEl = document.getElementById('summary-list');
+            summaryListEl.innerHTML = '';
+            const currentViewDate = calendar.getDate();
+            const currentMonth = currentViewDate.getMonth();
+            const currentYear = currentViewDate.getFullYear();
+
+            const monthEvents = calendar.getEvents().filter(e => {
+                const eventDate = new Date(e.startStr);
+                return eventDate.getMonth() === currentMonth && eventDate.getFullYear() === currentYear;
+            });
+            
+            statusList.forEach(status => {
+                const count = monthEvents.filter(e => e.title === status.label).length;
+                const box = document.createElement('div');
+                box.className = "flex flex-col items-center p-1 rounded border bg-slate-50";
+                const displayColor = (status.color === '#fde047') ? '#b8860b' : status.color;
+                box.innerHTML = `
+                    <span class="text-[8px] font-bold text-gray-400 mb-0.5 truncate w-full text-center">${status.label}</span>
+                    <span class="text-xs font-black" style="color: ${displayColor}">${count}<small class="text-[8px] ml-0.2">d</small></span>
+                `;
+                summaryListEl.appendChild(box);
+            });
+        }
+
+        function renderPalette() {
+            const paletteEl = document.getElementById('palette');
+            paletteEl.innerHTML = '';
+            statusList.forEach(st => {
+                const btn = document.createElement('button');
+                btn.innerText = st.label;
+                btn.id = 'btn-' + st.id;
+                const textColor = (st.color === '#fde047') ? 'text-gray-900' : 'text-white';
+                btn.className = `status-btn py-2 rounded-md ${textColor} text-[10px] font-black shadow-sm text-center`;
+                btn.style.backgroundColor = st.color;
+                btn.onclick = () => selectStatus(st.id, st.color, st.label);
+                paletteEl.appendChild(btn);
+            });
+        }
+
+        function selectStatus(id, color, label) {
+            currentStatus = { id, color, label };
+            document.querySelectorAll('.status-btn').forEach(btn => btn.classList.remove('selected-status'));
+            const activeBtn = document.getElementById('btn-' + id);
+            if (activeBtn) activeBtn.classList.add('selected-status');
+        }
+
+        function saveAllData() {
+            const events = calendar.getEvents().map(e => ({
+                title: e.title,
+                start: e.startStr,
+                backgroundColor: e.backgroundColor,
+                borderColor: e.borderColor,
+                textColor: e.textColor,
+                allDay: true
+            }));
+            localStorage.setItem('my_calendar_events', JSON.stringify(events));
+            alert('保存しました！');
+        }
+
+        function toggleBackup() {
+            const menu = document.getElementById('backup-menu');
+            menu.classList.toggle('hidden');
+        }
+
+        function exportData() {
+            const data = localStorage.getItem('my_calendar_events');
+            if (!data || data === "[]") return alert("データがありません");
+            navigator.clipboard.writeText(data).then(() => alert("コピーしました"));
+        }
+
+        function importData() {
+            const input = prompt("バックアップテキストを貼り付けてください：");
+            if (input) {
+                try {
+                    JSON.parse(input);
+                    localStorage.setItem('my_calendar_events', input);
+                    location.reload();
+                } catch (e) { alert("形式が正しくありません"); }
+            }
+        }
+
+        function resetAll() {
+            if(confirm('初期化しますか？')) {
+                localStorage.clear();
+                location.reload();
+            }
+        }
+    </script>
+</body>
+</html>
